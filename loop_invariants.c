@@ -10,26 +10,28 @@ extern "C" {
 
 #include <stdio.h>
 
-typedef struct instruction_info {
+// информация об инструкции
+typedef struct {
 	Blk *block;
+	int block_index;
 	int instruction_index;
 } instruction_info_t;
 
-typedef struct array {
+typedef struct {
 	instruction_info_t *values;
 	int size;
 	int capacity;
-} array_t;
+} info_aray_t;
 
-typedef struct block_array {
+typedef struct {
 	Blk **blocks;
 	int size;
 	int capacity;
 } block_array_t;
 
 // инициализация массива
-array_t init_array() {
-	array_t array;
+info_aray_t init_array() {
+	info_aray_t array;
 	array.size = 0;
 	array.capacity = 1;
 	array.values = (instruction_info_t *) malloc(sizeof(instruction_info_t));
@@ -44,7 +46,7 @@ block_array_t init_block_array() {
 	return array;
 }
 
-void add_to_array(array_t *array, instruction_info_t info) {
+void add_to_array(info_aray_t *array, instruction_info_t info) {
 	array->values[array->size++] = info;
 
 	if (array->size >= array->capacity) {
@@ -66,7 +68,7 @@ void add_to_block_array(block_array_t *array, Blk *blk) {
 	}
 }
 
-int is_invariant_argument(block_array_t blocks, array_t invariant_instructions, Ref arg, Blk *blk) {
+int is_invariant_argument(block_array_t blocks, info_aray_t invariant_instructions, Ref arg, Blk *blk) {
 	if (arg.type == RCon)
 		return 1;
 
@@ -98,7 +100,7 @@ int is_invariant_argument(block_array_t blocks, array_t invariant_instructions, 
 	return 1;
 }
 
-int is_new_invariant(block_array_t blocks, array_t invariant_instructions, Ins *ins, Blk *blk) {
+int is_new_invariant(block_array_t blocks, info_aray_t invariant_instructions, Ins *ins, Blk *blk) {
 	if (!is_invariant_argument(blocks, invariant_instructions, ins->arg[0], blk))
 		return 0;
 
@@ -139,7 +141,7 @@ void print_phi(Fn *fn, Blk *blk) {
 		printf("NULL\n");
 }
 
-void print_array(Fn *fn, array_t array) {
+void print_array(Fn *fn, info_aray_t array) {
 	for (int i = 0; i < array.size; i++) {
 		Blk *blk = array.values[i].block;
 		Ins ins = blk->ins[array.values[i].instruction_index];
@@ -212,8 +214,8 @@ Blk* make_prehead(Fn *fn, Blk *first, Blk *last) {
 	return prehead;
 }
 
-array_t get_invariant_instructions(Fn *fn, block_array_t blocks) {
-	array_t invariant_instructions = init_array();
+info_aray_t get_invariant_instructions(Fn *fn, block_array_t blocks) {
+	info_aray_t invariant_instructions = init_array();
 
 	// printf("first: %s, last: %s\n", first->name, last->name);
 	int was_added = 0;
@@ -228,6 +230,7 @@ array_t get_invariant_instructions(Fn *fn, block_array_t blocks) {
 			if (is_new_invariant(blocks, invariant_instructions, blk->ins + j, blk)) {
 				instruction_info_t info;
 				info.block = blk;
+				info.block_index = i;
 				info.instruction_index = j;
 				add_to_array(&invariant_instructions, info);
 				was_added = 1;
@@ -261,25 +264,7 @@ int can_move(Fn *fn, instruction_info_t info, Blk *last, block_array_t blocks) {
 	return dom(block, last); // TODO: &&... loop is...
 }
 
-Ins remove_ins(instruction_info_t info) {
-	Ins ins = info.block->ins[info.instruction_index];
-	info.block->nins--;
-
-	for (int i = info.instruction_index; i < info.block->nins; i++)
-		info.block->ins[i] = info.block->ins[i + 1];
-
-	return ins;
-}
-
-int blk2idx(Blk *blk, block_array_t blocks) {
-	for (int i = 0; i < blocks.size; i++)
-		if (blk == blocks.blocks[i])
-			return i;
-
-	return -1;
-}
-
-void move_instructions(Fn *fn, block_array_t blocks, Blk *prehead, Blk *last, array_t invariant_instructions) {
+void move_instructions(Fn *fn, block_array_t blocks, Blk *prehead, Blk *last, info_aray_t invariant_instructions) {
 	prehead->ins = (Ins *) malloc(invariant_instructions.size * sizeof(Ins)); // TODO: optimize memory
 	prehead->nins = 0;
 
@@ -295,15 +280,14 @@ void move_instructions(Fn *fn, block_array_t blocks, Blk *prehead, Blk *last, ar
 
 	for (int i = 0; i < invariant_instructions.size; i++) {
 		instruction_info_t info = invariant_instructions.values[i];
-		int block_index = blk2idx(info.block, blocks);
 
 		if (can_move(fn, invariant_instructions.values[i], last, blocks)) {
 			prehead->ins[prehead->nins++] = info.block->ins[info.instruction_index];
 
-			int index = --blocks_ins_sizes[block_index];
+			int index = --blocks_ins_sizes[info.block_index];
 
 			for (int j = info.instruction_index; j < index; j++)
-				blocks_ins[block_index][j] = blocks_ins[block_index][j + 1];
+				blocks_ins[info.block_index][j] = blocks_ins[info.block_index][j + 1];
 		}
 	}
 
@@ -322,7 +306,7 @@ void process_loop(Fn *fn, Blk *first, Blk *last) {
 	// 	printf("%s\n", blocks.blocks[i]->name);
 	// }
 
-	array_t invariant_instructions = get_invariant_instructions(fn, blocks);
+	info_aray_t invariant_instructions = get_invariant_instructions(fn, blocks);
 
 	// printf("All invariant_instructions:\n");
 	// print_array(fn, invariant_instructions);
