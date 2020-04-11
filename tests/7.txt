@@ -1,0 +1,17 @@
+export function w $foo() {
+@start
+	%x =w copy 1
+@d0
+	%x =w add %x, 1
+	jnz %x, @d1, @d2
+@d1
+	%y =w copy 0
+	jmp @d3
+@d2
+	%y =w copy 1
+	jmp @d3
+@d3
+	jnz %x, @d0, @end
+@end
+	ret
+}
