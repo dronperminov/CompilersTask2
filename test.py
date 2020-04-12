@@ -45,7 +45,7 @@ def test(answers_path, outputs_path):
 
 		for j in range(len(answers[i]["instructions"])):
 			if (answers[i]["instructions"][j] != outputs[i]["instructions"][j]):
-				printf("Different instructions at block '" + answers[i]["name"] + "'")
+				print("Different instructions at block '" + answers[i]["name"] + "'")
 				return False
 
 	return True

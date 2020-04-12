@@ -36,25 +36,79 @@ char* get_name(Fn *fn, int val) {
 	return val > Tmp0 ? fn->tmp[val].name : "[?]";
 }
 
+int get_use_count(Fn *fn, int val) {
+	return val > Tmp0 ? fn->tmp[val].nuse : -1;
+}
+
 // вывод инструкции
-void print_ins(Fn *fn, Ins ins) {
-	char *to = get_name(fn, ins.to.val);
-	char *arg0 = get_name(fn, ins.arg[0].val);
-	char *arg1 = get_name(fn, ins.arg[1].val);
+void print_ins(Fn *fn, Ins *ins) {
+	if (!ins)
+		printf("NULL\n");
+
+	char *to = get_name(fn, ins->to.val);
+	char *arg0 = get_name(fn, ins->arg[0].val);
+	char *arg1 = get_name(fn, ins->arg[1].val);
 
 	printf("%s <- %s %s\n", to, arg0, arg1);
 }
 
 // вывод фи-функции
-void print_phi(Fn *fn, Blk *blk) {
-	printf("phi of %s:", blk->name);
-
-	if (blk->phi) {
-		char *to = blk->phi->to.val > Tmp0 ? fn->tmp[blk->phi->to.val].name : "[?]";
-		printf("%s, narg: %d\n", to, blk->phi->narg);
+void print_phi(Fn *fn, Phi *phi) {
+	if (phi) {
+		printf("%s, narg: %d\n", get_name(fn, phi->to.val), phi->narg);
 	}
 	else
 		printf("NULL\n");
+}
+
+void print_use_info(Fn *fn, int val) {
+	printf("    name: %s\n", get_name(fn, val));
+	printf("    count: %d\n", get_use_count(fn, val));
+
+	if (get_use_count(fn, val) == -1)
+		return;
+
+	for (int i = 0; i < fn->tmp[val].nuse; i++) {
+		Use *use = fn->tmp[val].use + i;
+
+		printf("    use[%d]: blkid: %d   ", i, use->bid);
+		if (use->type == UPhi) {
+			printf("UPhi\t");
+			Phi *phi = (Phi *) use->u.phi;
+			print_phi(fn, phi);
+		}
+		else if (use->type == UIns) {
+			printf("UIns\t");
+			Ins *ins = (Ins *) use->u.ins;
+			print_ins(fn, ins);
+		}
+		else if (use->type == UXXX){
+			printf("UXXX [?]\n");
+		}
+		else if (use->type == UJmp){
+			printf("Ujmp [?]\n");
+		}
+	}
+}
+
+void print_all_use(Fn *fn) {
+	printf("Print use:\n");
+	Blk *blk = fn->start;
+
+	for (int i = 0; i < fn->nblk; i++) {
+		printf("@%s:\n", blk->name);
+
+		for (int j = 0; j < blk->nins; j++) {
+			Ins ins = blk->ins[j];
+			print_use_info(fn, ins.to.val);
+			// printf("    ");
+			// printf("%s: %d\t", get_name(fn, ins.to.val), get_use_count(fn, ins.to.val));
+			// printf("%s: %d\t", get_name(fn, ins.arg[0].val), get_use_count(fn, ins.arg[0].val));
+			// printf("%s: %d\n", get_name(fn, ins.arg[1].val), get_use_count(fn, ins.arg[1].val));			
+		}
+
+		blk = blk->link;
+	}
 }
 
 /***********************************************************************************************************/
@@ -96,7 +150,7 @@ void add_to_info_array(info_aray_t *array, Blk *block, int block_index, int inst
 void print_info_array(Fn *fn, info_aray_t array) {
 	for (int i = 0; i < array.size; i++) {
 		Blk *blk = array.values[i].block;
-		Ins ins = blk->ins[array.values[i].instruction_index];
+		Ins *ins = blk->ins + array.values[i].instruction_index;
 
 		print_ins(fn, ins);
 	}
@@ -215,7 +269,7 @@ info_aray_t get_invariant_instructions(Fn *fn, block_array_t blocks) {
 	for (int i = 0; i < blocks.size; i++) {
 		for (int j = 0; j < blocks.blocks[i]->nins; j++) {
 			// printf("curr ins: ");
-			// print_ins(fn, blocks.blocks[i]->ins[j]);
+			// print_ins(fn, blocks.blocks[i]->ins + j);
 
 			if (is_new_invariant(blocks, invariant_instructions, blocks.blocks[i]->ins + j, blocks.blocks[i])) {
 				add_to_info_array(&invariant_instructions, blocks.blocks[i], i, j);
@@ -297,19 +351,31 @@ Blk* make_prehead(Fn *fn, Blk *first, Blk *last) {
 
 // можно ли перемещать инструкцию
 int can_move(Fn *fn, invariant_ins_t info, Blk *last, block_array_t blocks) {
+	Ins *ins = info.block->ins + info.instruction_index;
+
 	for (int i = 0; i < blocks.size; i++)
 		for (int j = 0; j < blocks.blocks[i]->nins; j++) {
 			Ins *ins1 = blocks.blocks[i]->ins + j;
-			Ins *ins2 = info.block->ins + info.instruction_index;
 			
-			if (ins1 != ins2 && ins1->to.val == ins2->to.val) {
+			if (ins1 != ins && ins1->to.val == ins->to.val) {
 				// printf("addresses: %p, %p\n", ins1, ins2);
 				// printf("can not move: blk %s and %s: [%s] and [%s]\n", blocks.blocks[i]->name, block->name, get_name(fn, blocks.blocks[i]->ins[j].to.val), get_name(fn, block->ins[info.instruction_index].to.val));
 				return 0;
 			}
 		}
 
-	return dom(info.block, last); // TODO: &&... loop is...
+	if (dom(info.block, last))
+		return 1;
+
+	int val = ins->to.val;
+	for (int i = 0; i < fn->tmp[val].nuse; i++) {
+		Use *use = fn->tmp[val].use + i;
+
+		if (use->bid <= last->id)
+			return 0;
+	}
+
+	return 1;
 }
 
 // перемещение инвариантных инструкций
@@ -387,6 +453,9 @@ static void readfn (Fn *fn) {
     fillpreds(fn);
     filluse(fn);
     ssa(fn); 
+    filluse(fn);
+
+    // print_all_use(fn);
 
 	for (Blk *blk = fn->start; blk; blk = blk->link) {
 		// print_phi(fn, blk);
