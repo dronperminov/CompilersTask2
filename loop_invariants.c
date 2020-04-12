@@ -190,17 +190,17 @@ void add_to_block_array(block_array_t *array, Blk *blk) {
 /***********************************************************************************************************/
 
 // получение блоков цикла
-void get_loop_blocks(Blk *first, Blk *last, block_array_t *blocks) {
-	add_to_block_array(blocks, first);
+void get_loop_blocks(Blk *first, Blk *curr, block_array_t *blocks) {
+	add_to_block_array(blocks, curr);
 
-	if (first == last)
+	if (curr->s1 == first || curr->s2 == first)
 		return;
 
-	if (first->s1->id > first->id)
-		get_loop_blocks(first->s1, last, blocks);
+	if (curr->s1->id > curr->id)
+		get_loop_blocks(first, curr->s1, blocks);
 
-	if (first->s2 && first->s2->id > first->id)
-		get_loop_blocks(first->s2, last, blocks);
+	if (curr->s2 && curr->s2->id > curr->id)
+		get_loop_blocks(first, curr->s2, blocks);
 }
 
 // проверка наличия достигающих определений внутри цикла
@@ -419,7 +419,7 @@ void move_instructions(Fn *fn, block_array_t blocks, Blk *prehead, Blk *last, in
 // обработка цикла
 void process_loop(Fn *fn, Blk *first, Blk *last) {
 	block_array_t blocks = init_block_array();
-	get_loop_blocks(first, last, &blocks); // получаем блоки цикла
+	get_loop_blocks(first, first, &blocks); // получаем блоки цикла
 
 	// printf("loop blocks:\n");
 	// for (int i = 0; i < blocks.size; i++) {
