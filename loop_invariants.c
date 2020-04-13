@@ -10,6 +10,9 @@ extern "C" {
 
 #include <stdio.h>
 
+// #define PRINT_LASTS 1
+// #define PRINT_LASTS_BLOCKS 1
+
 // информация об инструкции
 typedef struct {
 	Blk *block;
@@ -175,9 +178,9 @@ int contain_block(block_array_t array, Blk *blk) {
 }
 
 // добавление блока во множество блоков
-void add_to_block_array(block_array_t *array, Blk *blk) {
+int add_to_block_array(block_array_t *array, Blk *blk) {
 	if (contain_block(*array, blk))
-		return;
+		return 0;
 
 	array->blocks[array->size++] = blk;
 
@@ -185,19 +188,37 @@ void add_to_block_array(block_array_t *array, Blk *blk) {
 		array->capacity *= 2;
 		array->blocks = (Blk **) realloc(array->blocks, array->capacity * sizeof(Blk *));
 	}
+
+	return 1;
+}
+
+// обмен местами двух блоков в массиве
+void swap_block_array(block_array_t array, int i, int j) {
+	Blk *tmp = array.blocks[i];
+	array.blocks[i] = array.blocks[j];
+	array.blocks[j] = tmp;
+}
+
+void print_block_array(block_array_t array) {
+	for (int i = 0; i < array.size; i++) {
+		printf("@%s\n", array.blocks[i]->name);
+	}
 }
 
 /***********************************************************************************************************/
 
 // получение блоков цикла
 void get_loop_blocks(Blk *last, Blk *curr, block_array_t *blocks) {
-	add_to_block_array(blocks, curr);
-
-	if (last->s1 == curr || last->s2 == curr)
+	if (!add_to_block_array(blocks, curr))
 		return;
 
+	if (curr->id <= last->id && (last->s1 == curr || last->s2 == curr))
+		return;
+	// if (last->s1 == curr || last->s2 == curr)
+	// 	return;
+
 	for (int i = 0; i < curr->npred; i++)
-		if (curr->pred[i]->id < curr->id)
+		if (curr->pred[i]->id != curr->id)
 			get_loop_blocks(last, curr->pred[i], blocks);
 }
 
@@ -396,24 +417,43 @@ int has_another_def(Blk *blk, Ins *ins) {
 	return 0;
 }
 
+int is_block_dominant(block_array_t blocks, Blk *block) {
+	for (int i = 0; i < blocks.size; i++) {
+		if (!blocks.blocks[i]->s2 || contain_block(blocks, blocks.blocks[i]->s2))
+			continue;
+
+		if (!dom(block, blocks.blocks[i]))
+			return 0;
+	}
+
+	return 1;
+}
+
+int has_use_after_loop(Fn *fn, Blk *last, int val) {
+	for (int i = 0; i < fn->tmp[val].nuse; i++) {
+		Use *use = fn->tmp[val].use + i;
+
+		if (use->bid > last->id)
+			return 1;
+	}
+
+	return 0;
+}
+
 // можно ли перемещать инструкцию
 int can_move(Fn *fn, invariant_ins_t info, Blk *last, block_array_t blocks) {
 	Ins *ins = info.block->ins + info.instruction_index;
 
+	// TODO: IS IT NECESSARY?
 	for (int i = 0; i < blocks.size; i++)
 		if (has_another_def(blocks.blocks[i], ins))
 			return 0;
 
-	if (dom(info.block, last))
+	if (is_block_dominant(blocks, info.block))
 		return 1;
 
-	int val = ins->to.val;
-	for (int i = 0; i < fn->tmp[val].nuse; i++) {
-		Use *use = fn->tmp[val].use + i;
-
-		if (use->bid <= last->id)
-			return 0;
-	}
+	if (has_use_after_loop(fn, last, ins->to.val))
+		return 0;
 
 	return 1;
 }
@@ -421,7 +461,7 @@ int can_move(Fn *fn, invariant_ins_t info, Blk *last, block_array_t blocks) {
 // перемещение инвариантных инструкций
 void move_instructions(Fn *fn, block_array_t blocks, Blk *prehead, Blk *last, info_aray_t invariant_instructions) {
 	prehead->ins = (Ins *) realloc(prehead->ins, (prehead->nins + invariant_instructions.size) * sizeof(Ins)); // TODO: optimize memory
-	
+
 	Ins* blocks_ins[blocks.size];
 	int blocks_ins_sizes[blocks.size];
 
@@ -456,10 +496,7 @@ void move_instructions(Fn *fn, block_array_t blocks, Blk *prehead, Blk *last, in
 }
 
 // обработка цикла
-void process_loop(Fn *fn, Blk *first, Blk *last) {
-	block_array_t blocks = init_block_array();
-	get_loop_blocks(last, last, &blocks); // получаем блоки цикла
-
+void process_loop(Fn *fn, Blk *first, Blk *last, block_array_t blocks) {
 	for (int i = 0, j = blocks.size - 1; i < j; i++, j--) {
 		Blk *tmp = blocks.blocks[i];
 		blocks.blocks[i] = blocks.blocks[j];
@@ -485,19 +522,54 @@ void process_loop(Fn *fn, Blk *first, Blk *last) {
 	free(blocks.blocks);
 }
 
-void process_as_possible_footer(Fn *fn, Blk *blk) {
-	Blk **pred = blk->pred;
-
+void process_as_footer(Fn *fn, Blk *blk, block_array_t blocks) {
 	if (blk->s1->id <= blk->id) {
-		process_loop(fn, blk->s1, blk);
+		process_loop(fn, blk->s1, blk, blocks);
 		return;
 	}
 	
 	assert(blk->s2 && blk->s2->id <= blk->id);
-	process_loop(fn, blk->s2, blk);
-	// for (int i = 0; i < blk->npred; i++)
-	// 	if (blk->id <= pred[i]->id)
-	// 		process_loop(fn, blk, pred[i]);
+	process_loop(fn, blk->s2, blk, blocks);
+}
+
+int get_block_after(block_array_t lasts, Blk *blk, int start) {
+	for (int i = start; i < lasts.size; i++)
+		if (blk == lasts.blocks[i])
+			return i;
+
+	return -1;
+}
+
+void reorder_lasts(block_array_t lasts, block_array_t *lasts_blocks) {
+	for (int i = 0; i < lasts.size; i++) {
+
+		lasts_blocks[i] = init_block_array();
+		get_loop_blocks(lasts.blocks[i], lasts.blocks[i], &lasts_blocks[i]); // получаем блоки цикла
+		
+#ifdef PRINT_LASTS_BLOCKS
+		printf("blocks of @%s:\n", lasts.blocks[i]->name);
+		print_block_array(lasts_blocks[i]);
+		printf("\n");
+#endif
+	}
+
+	/*for (int i = 0; i < lasts.size; i++) {
+		for (int j = 0; j < lasts_blocks[i].size; j++) {
+			Blk *blk = lasts_blocks[i].blocks[j];
+
+			int index = get_block_after(lasts, blk, i + 1);
+
+			if (index == -1)
+				continue;
+
+			swap_block_array(lasts, i, index);
+			block_array_t tmp = lasts_blocks[i];
+			lasts_blocks[i] = lasts_blocks[index];
+			lasts_blocks[index] = tmp;
+			i--;
+			break;
+		}
+	}*/
 }
 
 static void readfn (Fn *fn) {
@@ -517,8 +589,16 @@ static void readfn (Fn *fn) {
 				add_to_block_array(&lasts, blk->pred[i]);
 	}
 
+#ifdef PRINT_LASTS
+	printf("lasts:\n");
+	print_block_array(lasts);
+#endif
+
+	block_array_t lasts_blocks[lasts.size];
+	reorder_lasts(lasts, lasts_blocks);
+
 	for (int i = 0; i < lasts.size; i++)
-		process_as_possible_footer(fn, lasts.blocks[i]); // TODO: FIX THIS
+		process_as_footer(fn, lasts.blocks[i], lasts_blocks[i]); // TODO: FIX THIS
 
     printfn(fn, stdout);
 }

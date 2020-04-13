@@ -11,4 +11,6 @@ gcc loop_invariants.c -L /usr/bin/qbe/lib -lqbe -o loop_invariants &&
 ./loop_invariants < tests/9.txt > outputs/9.txt &&
 ./loop_invariants < tests/10.txt > outputs/10.txt &&
 ./loop_invariants < tests/11.txt > outputs/11.txt &&
+./loop_invariants < tests/12.txt > outputs/12.txt &&
+./loop_invariants < tests/13.txt > outputs/13.txt &&
 python3 test.py

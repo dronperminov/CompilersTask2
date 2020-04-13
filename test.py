@@ -43,10 +43,17 @@ def test(answers_path, outputs_path):
 			print("Different number of instructions at block '" + answers[i]["name"] + "'")
 			return False
 
-		for j in range(len(answers[i]["instructions"])):
-			if (answers[i]["instructions"][j] != outputs[i]["instructions"][j]):
-				print("Different instructions at block '" + answers[i]["name"] + "'")
-				return False
+		ans1 = set(answers[i]["instructions"])
+		ans2 = set(outputs[i]["instructions"])
+
+		if ans1 != ans2:
+			print("Different instructions at block '" + answers[i]["name"] + "'")
+			return False
+
+		#for j in range(len(answers[i]["instructions"])):
+		#	if (answers[i]["instructions"][j] != outputs[i]["instructions"][j]):
+		#		print("Different instructions at block '" + answers[i]["name"] + "'")
+		#		return False
 
 	return True
 
