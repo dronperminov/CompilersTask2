@@ -199,20 +199,53 @@ void swap_block_array(block_array_t array, int i, int j) {
 	array.blocks[j] = tmp;
 }
 
+void sort_blocks_array_by_id(block_array_t array) {
+	int is_sorted = 0;
+
+	while (!is_sorted) {
+		is_sorted = 1;
+
+		for (int i = 0; i < array.size - 1; i++) {
+			if (array.blocks[i]->id < array.blocks[i + 1]->id) {
+				is_sorted = 0;
+				swap_block_array(array, i, i + 1);
+			}
+		}
+	}
+}
+
 void print_block_array(block_array_t array) {
 	for (int i = 0; i < array.size; i++) {
-		printf("@%s\n", array.blocks[i]->name);
+		printf("@%s (id: %d)\n", array.blocks[i]->name, array.blocks[i]->id);
 	}
 }
 
 /***********************************************************************************************************/
+
+int is_forward_edge(Blk *a, Blk *b) {
+	assert(a->s1 == b || a->s2 == b);
+
+	if (a->id && b->id)
+		return a->id < b->id;
+
+	return a->id == 0;
+}
+
+int is_backward_edge(Blk *a, Blk *b) {
+	assert(a->s1 == b || a->s2 == b);
+	
+	if (a->id && b->id)
+		return a->id >= b->id;
+
+	return 0;
+}
 
 // получение блоков цикла
 void get_loop_blocks(Blk *last, Blk *curr, block_array_t *blocks) {
 	if (!add_to_block_array(blocks, curr))
 		return;
 
-	if (curr->id <= last->id && (last->s1 == curr || last->s2 == curr))
+	if ((last->s1 == curr || last->s2 == curr) && is_backward_edge(last, curr))
 		return;
 	// if (last->s1 == curr || last->s2 == curr)
 	// 	return;
@@ -341,7 +374,7 @@ void update_pred(Blk **preds, int npreds, Blk *prehead, Blk *first, Blk *last) {
 	first_preds[index1++] = prehead;
 
 	for (int i = 0; i < npreds; i++) {
-		if (preds[i]->id >= first->id) {
+		if (is_backward_edge(preds[i], first)) {
 			first_preds[index1++] = preds[i];
 		}
 		else {
@@ -386,9 +419,11 @@ Blk* make_prehead(Fn *fn, Blk *first, Blk *last) {
 	strcpy(prehead->name, "prehead@");
 	strcat(prehead->name, first->name);
 
-	if (!strcmp(first->pred[0]->name, prehead->name)) {
-		free(prehead);
-		return first->pred[0];
+	for (int i = 0; i < first->npred; i++) {
+		if (!strcmp(first->pred[i]->name, prehead->name)) {
+			free(prehead);
+			return first->pred[i];
+		}
 	}
 
 	prehead->s1 = first;
@@ -429,6 +464,7 @@ int is_block_dominant(block_array_t blocks, Blk *block) {
 	return 1;
 }
 
+// используется ли переменная после цикла
 int has_use_after_loop(Fn *fn, Blk *last, int val) {
 	for (int i = 0; i < fn->tmp[val].nuse; i++) {
 		Use *use = fn->tmp[val].use + i;
@@ -462,30 +498,55 @@ int can_move(Fn *fn, invariant_ins_t info, Blk *last, block_array_t blocks) {
 void move_instructions(Fn *fn, block_array_t blocks, Blk *prehead, Blk *last, info_aray_t invariant_instructions) {
 	prehead->ins = (Ins *) realloc(prehead->ins, (prehead->nins + invariant_instructions.size) * sizeof(Ins)); // TODO: optimize memory
 
+	// printf("prehead (%s) instructions:\n", prehead->name);
+	// for (int i = 0; i < prehead->nins; i++)
+	// 	print_ins(fn, prehead->ins + i);
+	// printf("\n");
+
 	Ins* blocks_ins[blocks.size];
 	int blocks_ins_sizes[blocks.size];
 
+	// printf("Instructions by blocks:\n");
 	// копируем информацию об инструкциях в блоках
 	for (int i = 0; i < blocks.size; i++) {
 		blocks_ins_sizes[i] = blocks.blocks[i]->nins;
 		blocks_ins[i] = (Ins *) malloc(blocks.blocks[i]->nins * sizeof(Ins));
 
 		memcpy(blocks_ins[i], blocks.blocks[i]->ins, blocks.blocks[i]->nins * sizeof(Ins));
+
+		// printf("instructions of block @%s:\n", blocks.blocks[i]->name);
+		// for (int j = 0; j < blocks_ins_sizes[i]; j++)
+		// 	print_ins(fn, blocks_ins[i] + j);
+		// printf("\n");
 	}
+
 
 	// пытаемся переместить инвариантные инструкции
 	for (int i = 0; i < invariant_instructions.size; i++) {
 		invariant_ins_t info = invariant_instructions.values[i];
 
+		// printf("check instruction ");
+		// print_ins(fn, info.block->ins + info.instruction_index);
+
 		if (!can_move(fn, info, last, blocks))
 			continue;
+		// printf("move this\n");
 
 		prehead->ins[prehead->nins++] = info.block->ins[info.instruction_index];
 
-		int index = --blocks_ins_sizes[info.block_index];
+		int move_index = info.block->nins - blocks_ins_sizes[info.block_index];
+		int index = blocks_ins_sizes[info.block_index] - 1;
 
-		for (int j = info.instruction_index; j < index; j++)
+		for (int j = info.instruction_index - move_index; j < index; j++)
 			blocks_ins[info.block_index][j] = blocks_ins[info.block_index][j + 1];
+
+		blocks_ins_sizes[info.block_index] = index;
+
+		// printf("-----------------------------------------------\n");
+		// printf("after moving:\n");
+		// for (int j = 0; j < index; j++)
+		// 	print_ins(fn, blocks_ins[info.block_index] + j);
+		// printf("-----------------------------------------------\n");
 	}
 
 	// обновляем массивы инструкций для блоков
@@ -493,6 +554,23 @@ void move_instructions(Fn *fn, block_array_t blocks, Blk *prehead, Blk *last, in
 		blocks.blocks[i]->nins = blocks_ins_sizes[i];
 		blocks.blocks[i]->ins = blocks_ins[i];
 	}
+
+	// printf("new prehead (%s) instructions:\n", prehead->name);
+	// for (int i = 0; i < prehead->nins; i++)
+	// 	print_ins(fn, prehead->ins + i);
+
+	// printf("New instructions by blocks:\n");
+	// // копируем информацию об инструкциях в блоках
+	// for (int i = 0; i < blocks.size; i++) {
+	// 	printf("instructions of block @%s:\n", blocks.blocks[i]->name);
+		
+	// 	for (int j = 0; j < blocks.blocks[i]->nins; j++)
+	// 		print_ins(fn, blocks.blocks[i]->ins + j);
+	// 	printf("\n");
+	// }
+
+	// printf("==========================================================================\n");
+	// printf("\n");
 }
 
 // обработка цикла
@@ -503,7 +581,8 @@ void process_loop(Fn *fn, Blk *first, Blk *last, block_array_t blocks) {
 		blocks.blocks[j] = tmp;
 	}
 	
-	// printf("loop blocks:\n");
+	// printf("\n\nloop blocks:\n");
+	// print_block_array(blocks);
 	// for (int i = 0; i < blocks.size; i++) {
 	// 	printf("%s\n", blocks.blocks[i]->name);
 	// }
@@ -522,13 +601,22 @@ void process_loop(Fn *fn, Blk *first, Blk *last, block_array_t blocks) {
 	free(blocks.blocks);
 }
 
-void process_as_footer(Fn *fn, Blk *blk, block_array_t blocks) {
-	if (blk->s1->id <= blk->id) {
+void process_as_footer(Fn *fn, Blk *blk) {
+	block_array_t blocks = init_block_array();
+	get_loop_blocks(blk, blk, &blocks); // получаем блоки цикла
+		
+#ifdef PRINT_LASTS_BLOCKS
+		printf("blocks of @%s:\n", blk->name);
+		print_block_array(blocks);
+		printf("\n");
+#endif
+
+	if (is_backward_edge(blk, blk->s1)) {
 		process_loop(fn, blk->s1, blk, blocks);
 		return;
 	}
 	
-	assert(blk->s2 && blk->s2->id <= blk->id);
+	assert(is_backward_edge(blk, blk->s2));
 	process_loop(fn, blk->s2, blk, blocks);
 }
 
@@ -538,38 +626,6 @@ int get_block_after(block_array_t lasts, Blk *blk, int start) {
 			return i;
 
 	return -1;
-}
-
-void reorder_lasts(block_array_t lasts, block_array_t *lasts_blocks) {
-	for (int i = 0; i < lasts.size; i++) {
-
-		lasts_blocks[i] = init_block_array();
-		get_loop_blocks(lasts.blocks[i], lasts.blocks[i], &lasts_blocks[i]); // получаем блоки цикла
-		
-#ifdef PRINT_LASTS_BLOCKS
-		printf("blocks of @%s:\n", lasts.blocks[i]->name);
-		print_block_array(lasts_blocks[i]);
-		printf("\n");
-#endif
-	}
-
-	/*for (int i = 0; i < lasts.size; i++) {
-		for (int j = 0; j < lasts_blocks[i].size; j++) {
-			Blk *blk = lasts_blocks[i].blocks[j];
-
-			int index = get_block_after(lasts, blk, i + 1);
-
-			if (index == -1)
-				continue;
-
-			swap_block_array(lasts, i, index);
-			block_array_t tmp = lasts_blocks[i];
-			lasts_blocks[i] = lasts_blocks[index];
-			lasts_blocks[index] = tmp;
-			i--;
-			break;
-		}
-	}*/
 }
 
 static void readfn (Fn *fn) {
@@ -583,22 +639,20 @@ static void readfn (Fn *fn) {
 
     block_array_t lasts = init_block_array();
 
-	for (Blk *blk = fn->start; blk; blk = blk->link) {
+	for (Blk *blk = fn->start; blk; blk = blk->link)
 		for (int i = 0; i < blk->npred; i++)
-			if (blk->id <= blk->pred[i]->id)
+			if (is_backward_edge(blk->pred[i], blk))
 				add_to_block_array(&lasts, blk->pred[i]);
-	}
+
+	// sort_blocks_array_by_id(lasts);
 
 #ifdef PRINT_LASTS
 	printf("lasts:\n");
 	print_block_array(lasts);
 #endif
 
-	block_array_t lasts_blocks[lasts.size];
-	reorder_lasts(lasts, lasts_blocks);
-
 	for (int i = 0; i < lasts.size; i++)
-		process_as_footer(fn, lasts.blocks[i], lasts_blocks[i]); // TODO: FIX THIS
+		process_as_footer(fn, lasts.blocks[i]); // TODO: FIX THIS
 
     printfn(fn, stdout);
 }
