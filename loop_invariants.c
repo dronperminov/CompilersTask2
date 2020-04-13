@@ -86,10 +86,10 @@ void print_use_info(Fn *fn, int val) {
 			print_ins(fn, ins);
 		}
 		else if (use->type == UXXX){
-			printf("UXXX [?]\n");
+			printf("UXXX\n");
 		}
 		else if (use->type == UJmp){
-			printf("Ujmp [?]\n");
+			printf("Ujmp\n");
 		}
 	}
 }
@@ -104,10 +104,6 @@ void print_all_use(Fn *fn) {
 		for (int j = 0; j < blk->nins; j++) {
 			Ins ins = blk->ins[j];
 			print_use_info(fn, ins.to.val);
-			// printf("    ");
-			// printf("%s: %d\t", get_name(fn, ins.to.val), get_use_count(fn, ins.to.val));
-			// printf("%s: %d\t", get_name(fn, ins.arg[0].val), get_use_count(fn, ins.arg[0].val));
-			// printf("%s: %d\n", get_name(fn, ins.arg[1].val), get_use_count(fn, ins.arg[1].val));			
 		}
 
 		blk = blk->link;
@@ -158,7 +154,8 @@ void print_info_array(Fn *fn, info_aray_t array) {
 		print_ins(fn, ins);
 	}
 }
-/***********************************************************************************************************/
+
+/******************* Функции для работы с нашими массивами ********************/
 // инициализация массива блоков
 block_array_t init_block_array() {
 	block_array_t array;
@@ -220,7 +217,7 @@ void print_block_array(block_array_t array) {
 	}
 }
 
-/***********************************************************************************************************/
+/****************** Проверка направления дуги между блоками *******************/
 
 int is_forward_edge(Blk *a, Blk *b) {
 	assert(a->s1 == b || a->s2 == b);
@@ -233,62 +230,45 @@ int is_forward_edge(Blk *a, Blk *b) {
 
 int is_backward_edge(Blk *a, Blk *b) {
 	assert(a->s1 == b || a->s2 == b);
-	
+
 	if (a->id && b->id)
 		return a->id >= b->id;
 
 	return 0;
 }
 
-// получение блоков цикла
-void get_loop_blocks(Blk *last, Blk *curr, block_array_t *blocks) {
-	if (!add_to_block_array(blocks, curr))
-		return;
+/********************* Получение инвариантных инструкций **********************/
 
-	if ((last->s1 == curr || last->s2 == curr) && is_backward_edge(last, curr))
-		return;
-	// if (last->s1 == curr || last->s2 == curr)
-	// 	return;
-
-	for (int i = 0; i < curr->npred; i++)
-		if (curr->pred[i]->id != curr->id)
-			get_loop_blocks(last, curr->pred[i], blocks);
-}
-
-// все достигающие определения вне цикла
-int are_reaching_definitions_out_of_loop(Fn *fn, block_array_t blocks, Ref arg) {
+// если есть несколько достигающих определений, и одно
+// из них внутри цикла, то переменная не инвариантна
+int one_of_reaching_definitions_in_loop(Fn *fn, block_array_t blocks, Ref arg) {
 	for (int k = 0; k < blocks.size; k++) {
 		for (Phi *phi = blocks.blocks[k]->phi; phi; phi = phi->link) {
-			// printf("check phi: ");
-			// print_phi(fn, phi);
 
-			if (phi->to.val != arg.val)
+			if (phi->to.val != arg.val) // TODO: && same ssa prefix?
 				continue;
 
-			for (int i = 0; i < phi->narg; i++) {
-				// printf("    Check block @%s    ", phi->blk[i]->name);
-
-				if (contain_block(blocks, phi->blk[i])) {
-					// printf("block EST\n");
-					return 0;
-				}
-
-				// printf("blocka NET\n");
-			}
-		}		
+			// TODO: должны проверяться не блоки из которых приходит
+			// определение, а блоки в которых определение находится?
+			for (int i = 0; i < phi->narg; i++)
+				if (contain_block(blocks, phi->blk[i]))
+					return 1;
+		}
 	}
-	
-	return 1;
+
+	return 0;
 }
 
-// проверка наличия достигающих определений внутри цикла
-int have_reaching_definitions(block_array_t blocks, Ref arg) {
+// проверка наличия достигающего определения внутри цикла
+int has_reaching_definition_in_loop(block_array_t blocks, Ref arg) {
 	for (int i = 0; i < blocks.size; i++)
 		for (int j = 0; j < blocks.blocks[i]->nins; j++)
-			if (blocks.blocks[i]->ins[j].to.val == arg.val) // нашли достигающее определение внутри цикла
+			if (blocks.blocks[i]->ins[j].to.val == arg.val)
+				// TODO: && same ssa prefix?
+				// TODO: only one definition?
 				return 1;
 
-	return 0; // не нашли достигающее определение
+	return 0; // не нашли достигающее определение внутри цикла
 }
 
 // достигающее определение помечено инвариантным
@@ -297,6 +277,7 @@ int is_reaching_definition_marked_invariant(info_aray_t invariant_instructions, 
 		invariant_ins_t info = invariant_instructions.values[i];
 
 		if (arg.val == info.block->ins[info.instruction_index].to.val)
+			// TODO: && same ssa prefix?
 			return 1;
 	}
 
@@ -305,79 +286,79 @@ int is_reaching_definition_marked_invariant(info_aray_t invariant_instructions, 
 
 // проверка аргумента на инвариант цикла
 int is_invariant_argument(Fn *fn, block_array_t blocks, info_aray_t invariant_instructions, Ref arg, Blk *blk) {
-	if (arg.type == RCon) {
-		// printf("this is const\n");
+	// константа инвариантна
+	if (arg.type == RCon)
 		return 1;
-	}
 
-	if (!are_reaching_definitions_out_of_loop(fn, blocks, arg))
+	// переменная не может быть инвариантна, если достигающих
+	// определений несколько и одно из них внутри цикла
+	if (one_of_reaching_definitions_in_loop(fn, blocks, arg))
 		return 0;
 
-	if (is_reaching_definition_marked_invariant(invariant_instructions, arg)) // если достигающее определение уже помечено инвариантным
+	// переменная инвариантна, если достигающее определение уже помечено инвариантным
+	// TODO: единственное
+	if (is_reaching_definition_marked_invariant(invariant_instructions, arg))
 		return 1;
 
-	if (have_reaching_definitions(blocks, arg)) // если есть достигающее определение в цикле
-		return 0; // то это не инвариантный аргумент
+	// если есть достигающее определение в цикле, то это не инвариантный аргумент
+	if (has_reaching_definition_in_loop(blocks, arg))
+		return 0;
 
 	return 1;
 }
 
 // проверка, что инструкция является инвариантом цикла (до этого ещё не просмотренным)
 int is_new_invariant(Fn *fn, block_array_t blocks, info_aray_t invariant_instructions, Ins *ins, Blk *blk) {
-	// printf("Check is invariant: ");
-	// print_ins(fn, ins);
-	
-	// printf("Check arg[0]:\n");
+	// если оба аргумента инвариантны, то инструкция -- инвариант цикла
 	if (!is_invariant_argument(fn, blocks, invariant_instructions, ins->arg[0], blk))
 		return 0;
-
-	// printf("Check arg[1]:\n");
 	if (!is_invariant_argument(fn, blocks, invariant_instructions, ins->arg[1], blk))
 		return 0;
-
-	return !contain_instruction(invariant_instructions, ins); // оба аргумента инвариантны, проверяем наличие
+	// если нет в инвариантах, то это новый инвариант
+	return !contain_instruction(invariant_instructions, ins);
 }
 
-// получение инвариантных инструкций
+// собираем все инвариантные инструкции цикла
 info_aray_t get_invariant_instructions(Fn *fn, block_array_t blocks) {
 	info_aray_t invariant_instructions = init_array();
-	int was_added = 0;
+	int was_added = 1;
 
-	for (int i = 0; i < blocks.size; i++) {
-		for (int j = 0; j < blocks.blocks[i]->nins; j++) {
-			// printf("curr ins: ");
-			// print_ins(fn, blocks.blocks[i]->ins + j);
+	while (was_added) {
+		was_added = 0;
 
-			if (is_new_invariant(fn, blocks, invariant_instructions, blocks.blocks[i]->ins + j, blocks.blocks[i])) {
-				add_to_info_array(&invariant_instructions, blocks.blocks[i], i, j);
-				was_added = 1;
+		for (int i = 0; i < blocks.size; i++) {
+			for (int j = 0; j < blocks.blocks[i]->nins; j++) {
+				if (is_new_invariant(fn, blocks, invariant_instructions, blocks.blocks[i]->ins + j, blocks.blocks[i])) {
+					add_to_info_array(&invariant_instructions, blocks.blocks[i], i, j);
+					was_added = 1;
+				}
 			}
-		}
-
-		if (i == blocks.size - 1 && was_added) {
-			i = -1;
-			was_added = 0;
 		}
 	}
 
 	return invariant_instructions;
 }
 
-// обновление предецессоров у предзаголовка
-void update_pred(Blk **preds, int npreds, Blk *prehead, Blk *first, Blk *last) {
+/*************************** Создание предзаголовка ***************************/
+
+// обновление предецессоров у предзаголовка и заголовка
+void update_pred(Blk **preds, int npreds, Blk *prehead, Blk *first) {
 	Blk **prehead_preds = (Blk **) malloc(npreds * sizeof(Blk *));
 	Blk **first_preds = (Blk **) malloc(npreds * sizeof(Blk *));
 
 	int index1 = 0;
 	int index2 = 0;
 
+	// дуга из предзаголовка в заголовок
 	first_preds[index1++] = prehead;
 
 	for (int i = 0; i < npreds; i++) {
+		// оставляем обратно направленные дуги заголовку
 		if (is_backward_edge(preds[i], first)) {
 			first_preds[index1++] = preds[i];
 		}
 		else {
+			// перевязываем прямые дуги с заголовка на предзаголовок
 			if (preds[i]->s1 == first)
 				preds[i]->s1 = prehead;
 
@@ -404,16 +385,16 @@ void update_fn(Fn *fn, Blk *prehead, Blk *first) {
 		return;
 	}
 
-	Blk *blk = fn->start; 
+	Blk *blk = fn->start;
 
 	while (blk->link != first)
 		blk = blk->link;
-	
+
 	blk->link = prehead;
 }
 
 // создание предзаголовка
-Blk* make_prehead(Fn *fn, Blk *first, Blk *last) {
+Blk* make_prehead(Fn *fn, Blk *first) {
 	Blk *prehead = (Blk *) calloc(1, sizeof(Blk));
 
 	strcpy(prehead->name, "prehead@");
@@ -430,7 +411,7 @@ Blk* make_prehead(Fn *fn, Blk *first, Blk *last) {
 	prehead->s2 = NULL;
 	prehead->jmp.type = Jjmp;
 
-	update_pred(first->pred, first->npred, prehead, first, last);
+	update_pred(first->pred, first->npred, prehead, first);
 	update_fn(fn, prehead, first);
 
 	prehead->ins = NULL;
@@ -439,8 +420,10 @@ Blk* make_prehead(Fn *fn, Blk *first, Blk *last) {
 	return prehead;
 }
 
+/******************** Перемещение инвариантных инструкций *********************/
+
 // есть ли ещё одно определение
-int has_another_def(Blk *blk, Ins *ins) {
+int has_another_def_in_loop(Blk *blk, Ins *ins) {
 	for (Phi *phi = blk->phi; phi; phi = phi->link)
 		if (phi->to.val == ins->to.val)
 			return 1;
@@ -452,8 +435,11 @@ int has_another_def(Blk *blk, Ins *ins) {
 	return 0;
 }
 
-int is_block_dominant(block_array_t blocks, Blk *block) {
+// если определение в блоке, доминирующем все
+// выходы из цикла, то его можно перенести
+int dominates_exits(block_array_t blocks, Blk *block) {
 	for (int i = 0; i < blocks.size; i++) {
+		// блоки без выхода из цикла пропускаем
 		if (!blocks.blocks[i]->s2 || contain_block(blocks, blocks.blocks[i]->s2))
 			continue;
 
@@ -469,6 +455,7 @@ int has_use_after_loop(Fn *fn, Blk *last, int val) {
 	for (int i = 0; i < fn->tmp[val].nuse; i++) {
 		Use *use = fn->tmp[val].use + i;
 
+		// TODO its wrong.....
 		if (use->bid > last->id)
 			return 1;
 	}
@@ -476,77 +463,58 @@ int has_use_after_loop(Fn *fn, Blk *last, int val) {
 	return 0;
 }
 
-// можно ли перемещать инструкцию
+// можно ли переместить инструкцию
 int can_move(Fn *fn, invariant_ins_t info, Blk *last, block_array_t blocks) {
 	Ins *ins = info.block->ins + info.instruction_index;
 
+	// определение нельзя перенести, если в цикле есть
+	// ещё одно определение этой же переменной
 	// TODO: IS IT NECESSARY?
 	for (int i = 0; i < blocks.size; i++)
-		if (has_another_def(blocks.blocks[i], ins))
+		if (has_another_def_in_loop(blocks.blocks[i], ins))
 			return 0;
 
-	if (is_block_dominant(blocks, info.block))
+	// определение можно перенести если оно в блоке,
+	// доминирующем все выходы из цикла...
+	if (dominates_exits(blocks, info.block))
 		return 1;
 
-	if (has_use_after_loop(fn, last, ins->to.val))
-		return 0;
-
-	return 1;
+	// ...или мертво после цикла (нет использований)
+	return !has_use_after_loop(fn, last, ins->to.val);
 }
 
 // перемещение инвариантных инструкций
 void move_instructions(Fn *fn, block_array_t blocks, Blk *prehead, Blk *last, info_aray_t invariant_instructions) {
 	prehead->ins = (Ins *) realloc(prehead->ins, (prehead->nins + invariant_instructions.size) * sizeof(Ins)); // TODO: optimize memory
 
-	// printf("prehead (%s) instructions:\n", prehead->name);
-	// for (int i = 0; i < prehead->nins; i++)
-	// 	print_ins(fn, prehead->ins + i);
-	// printf("\n");
-
 	Ins* blocks_ins[blocks.size];
 	int blocks_ins_sizes[blocks.size];
 
-	// printf("Instructions by blocks:\n");
 	// копируем информацию об инструкциях в блоках
+	// в новые массивы, которые и будем менять
 	for (int i = 0; i < blocks.size; i++) {
 		blocks_ins_sizes[i] = blocks.blocks[i]->nins;
 		blocks_ins[i] = (Ins *) malloc(blocks.blocks[i]->nins * sizeof(Ins));
 
 		memcpy(blocks_ins[i], blocks.blocks[i]->ins, blocks.blocks[i]->nins * sizeof(Ins));
-
-		// printf("instructions of block @%s:\n", blocks.blocks[i]->name);
-		// for (int j = 0; j < blocks_ins_sizes[i]; j++)
-		// 	print_ins(fn, blocks_ins[i] + j);
-		// printf("\n");
 	}
-
 
 	// пытаемся переместить инвариантные инструкции
 	for (int i = 0; i < invariant_instructions.size; i++) {
 		invariant_ins_t info = invariant_instructions.values[i];
-
-		// printf("check instruction ");
-		// print_ins(fn, info.block->ins + info.instruction_index);
-
+		// некоторые инструкции нельзя перенести
 		if (!can_move(fn, info, last, blocks))
 			continue;
-		// printf("move this\n");
 
+		// добавляем инструкцию в предзаголовок
 		prehead->ins[prehead->nins++] = info.block->ins[info.instruction_index];
 
-		int move_index = info.block->nins - blocks_ins_sizes[info.block_index];
-		int index = blocks_ins_sizes[info.block_index] - 1;
+		// удаляем изнутри цикла
+		int shift = info.block->nins - blocks_ins_sizes[info.block_index];
+		int end_index = --blocks_ins_sizes[info.block_index];
 
-		for (int j = info.instruction_index - move_index; j < index; j++)
+		for (int j = info.instruction_index - shift; j < end_index; j++)
 			blocks_ins[info.block_index][j] = blocks_ins[info.block_index][j + 1];
-
-		blocks_ins_sizes[info.block_index] = index;
-
-		// printf("-----------------------------------------------\n");
-		// printf("after moving:\n");
-		// for (int j = 0; j < index; j++)
-		// 	print_ins(fn, blocks_ins[info.block_index] + j);
-		// printf("-----------------------------------------------\n");
 	}
 
 	// обновляем массивы инструкций для блоков
@@ -554,23 +522,21 @@ void move_instructions(Fn *fn, block_array_t blocks, Blk *prehead, Blk *last, in
 		blocks.blocks[i]->nins = blocks_ins_sizes[i];
 		blocks.blocks[i]->ins = blocks_ins[i];
 	}
+}
 
-	// printf("new prehead (%s) instructions:\n", prehead->name);
-	// for (int i = 0; i < prehead->nins; i++)
-	// 	print_ins(fn, prehead->ins + i);
+/****************************** Обработка цикла *******************************/
 
-	// printf("New instructions by blocks:\n");
-	// // копируем информацию об инструкциях в блоках
-	// for (int i = 0; i < blocks.size; i++) {
-	// 	printf("instructions of block @%s:\n", blocks.blocks[i]->name);
-		
-	// 	for (int j = 0; j < blocks.blocks[i]->nins; j++)
-	// 		print_ins(fn, blocks.blocks[i]->ins + j);
-	// 	printf("\n");
-	// }
+// получение блоков цикла
+void get_loop_blocks(Blk *last, Blk *curr, block_array_t *blocks) {
+	if (!add_to_block_array(blocks, curr))
+		return;
 
-	// printf("==========================================================================\n");
-	// printf("\n");
+	if ((last->s1 == curr || last->s2 == curr) && is_backward_edge(last, curr))
+		return;
+
+	for (int i = 0; i < curr->npred; i++)
+		if (curr->pred[i]->id != curr->id)
+			get_loop_blocks(last, curr->pred[i], blocks);
 }
 
 // обработка цикла
@@ -580,42 +546,33 @@ void process_loop(Fn *fn, Blk *first, Blk *last, block_array_t blocks) {
 		blocks.blocks[i] = blocks.blocks[j];
 		blocks.blocks[j] = tmp;
 	}
-	
-	// printf("\n\nloop blocks:\n");
-	// print_block_array(blocks);
-	// for (int i = 0; i < blocks.size; i++) {
-	// 	printf("%s\n", blocks.blocks[i]->name);
-	// }
 
-	info_aray_t invariant_instructions = get_invariant_instructions(fn, blocks); // получаем инвариантные инструкции
+	// находим инвариантные инструкции
+	info_aray_t invariant_instructions = get_invariant_instructions(fn, blocks);
 
-	// printf("All invariant_instructions:\n");
-	// print_info_array(fn, invariant_instructions);
-
-	if (invariant_instructions.size) { // если есть инвариантные инстркции
-		Blk *prehead = make_prehead(fn, first, last); // вставляем предзаголовок
-		move_instructions(fn, blocks, prehead, last, invariant_instructions); // перемещаем инвариантные инструкции
+	// вставляем и заполняем предзаголовок только если есть инварианты
+	if (invariant_instructions.size) {
+		Blk *prehead = make_prehead(fn, first);
+		move_instructions(fn, blocks, prehead, last, invariant_instructions);
 	}
 
 	free(invariant_instructions.values);
 	free(blocks.blocks);
 }
 
+// по блоку, из которого обратная дуга, находим цикл и обрабатываем его
 void process_as_footer(Fn *fn, Blk *blk) {
+	// находим блоки цикла
 	block_array_t blocks = init_block_array();
-	get_loop_blocks(blk, blk, &blocks); // получаем блоки цикла
-		
-#ifdef PRINT_LASTS_BLOCKS
-		printf("blocks of @%s:\n", blk->name);
-		print_block_array(blocks);
-		printf("\n");
-#endif
+	get_loop_blocks(blk, blk, &blocks);
 
+	// подставляем заголовок и обрабатываем цикл
+	// заголовок -- блок, в который идёт обратная дуга
 	if (is_backward_edge(blk, blk->s1)) {
 		process_loop(fn, blk->s1, blk, blocks);
 		return;
 	}
-	
+
 	assert(is_backward_edge(blk, blk->s2));
 	process_loop(fn, blk->s2, blk, blocks);
 }
@@ -628,16 +585,15 @@ int get_block_after(block_array_t lasts, Blk *blk, int start) {
 	return -1;
 }
 
+/****************************** Главные функции *******************************/
 static void readfn (Fn *fn) {
-    fillrpo(fn); // Traverses the CFG in reverse post-order, filling blk->id.
-    fillpreds(fn);
-    filluse(fn);
-    ssa(fn); 
-    filluse(fn);
+  fillrpo(fn); // Traverses the CFG in reverse post-order, filling blk->id.
+  fillpreds(fn);
+  filluse(fn);
+  ssa(fn);
+  filluse(fn);
 
-    // print_all_use(fn);
-
-    block_array_t lasts = init_block_array();
+  block_array_t lasts = init_block_array();
 
 	for (Blk *blk = fn->start; blk; blk = blk->link)
 		for (int i = 0; i < blk->npred; i++)
@@ -652,9 +608,9 @@ static void readfn (Fn *fn) {
 #endif
 
 	for (int i = 0; i < lasts.size; i++)
-		process_as_footer(fn, lasts.blocks[i]); // TODO: FIX THIS
+		process_as_footer(fn, lasts.blocks[i]);
 
-    printfn(fn, stdout);
+  printfn(fn, stdout);
 }
 
 static void readdat (Dat *dat) {
