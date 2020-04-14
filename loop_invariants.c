@@ -34,83 +34,126 @@ typedef struct {
 	int capacity;
 } block_array_t;
 
-// получение имени по значению
-char* get_name(Fn *fn, int val) {
-	return val > Tmp0 ? fn->tmp[val].name : "[?]";
-}
+/*********************************** Печать ***********************************/
 
-int get_use_count(Fn *fn, int val) {
-	return val > Tmp0 ? fn->tmp[val].nuse : -1;
+// вывод имени с фи-суффиксом
+void print_arg(Fn *fn, Ref arg) {
+	if (arg.val >= Tmp0) {
+		printf("[%d]%s.%d", arg.val, fn->tmp[arg.val].name, fn->tmp[arg.val].phi);
+	}
+	else if (arg.type == RCon) {
+		printf("Const");
+	}
+	else if (arg.val == RXX) {
+		printf("[RXX]");
+	}
+	else {
+		printf("[Ref]");
+	}
 }
 
 // вывод инструкции
 void print_ins(Fn *fn, Ins *ins) {
-	if (!ins)
-		printf("NULL\n");
+	if (!ins) {
+		printf("\t[Null Ins]\n");
+		return;
+	}
 
-	char *to = get_name(fn, ins->to.val);
-	char *arg0 = get_name(fn, ins->arg[0].val);
-	char *arg1 = get_name(fn, ins->arg[1].val);
-
-	printf("%s <- %s %s\n", to, arg0, arg1);
+	printf("\t");
+	print_arg(fn, ins->to);
+	printf(" = [Op] ");
+	print_arg(fn, ins->arg[0]);
+	printf(", ");
+	print_arg(fn, ins->arg[1]);
+	printf("\n");
 }
 
 // вывод фи-функции
 void print_phi(Fn *fn, Phi *phi) {
-	if (phi) {
-		printf("%s, narg: %d\n", get_name(fn, phi->to.val), phi->narg);
+	if (!phi) {
+		printf("\t[Null Phi]\n");
+		return;
 	}
-	else
-		printf("NULL\n");
+
+	printf("\t");
+	print_arg(fn, phi->to);
+	printf(" = phi @%s ", phi->blk[0]->name);
+	print_arg(fn, phi->arg[0]);
+	for (int i = 1; i < phi->narg; i++) {
+		printf(", @%s ", phi->blk[i]->name);
+		print_arg(fn, phi->arg[i]);
+	}
+	printf("\n");
 }
 
-void print_use_info(Fn *fn, int val) {
-	printf("    name: %s\n", get_name(fn, val));
-	printf("    count: %d\n", get_use_count(fn, val));
-
-	if (get_use_count(fn, val) == -1)
+void print_block(Fn *fn, Blk *blk) {
+	if (!blk) {
+		printf("[Null Blk]\n");
 		return;
+	}
 
-	for (int i = 0; i < fn->tmp[val].nuse; i++) {
-		Use *use = fn->tmp[val].use + i;
+	printf("@%s (id:%d):\n", blk->name, blk->id);
+	for (Phi *phi = blk->phi; phi; phi = phi->link) {
+		print_phi(fn, phi);
+	}
+	for (Ins *ins = blk->ins; ins < blk->ins + blk->nins; ins++) {
+		print_ins(fn, ins);
+	}
+	// print_jmp(blk->jmp);
+}
 
-		printf("    use[%d]: blkid: %d   ", i, use->bid);
+void print_use_info(Fn *fn, Ref arg) {
+	printf("Uses of ");
+	print_arg(fn, arg);
+
+	if (arg.val < Tmp0) {
+		printf(": –\n");
+		return;
+	}
+
+	Tmp tmp = fn->tmp[arg.val];
+	printf(": %d\n", tmp.nuse);
+
+	for (int i = 0; i < tmp.nuse; i++) {
+		Use *use = tmp.use + i;
+
+		printf("\tuse[%d] in blk %d: ", i, use->bid);
 		if (use->type == UPhi) {
-			printf("UPhi\t");
+			printf("(UPhi) ");
 			Phi *phi = (Phi *) use->u.phi;
 			print_phi(fn, phi);
 		}
 		else if (use->type == UIns) {
-			printf("UIns\t");
+			printf("(UIns) ");
 			Ins *ins = (Ins *) use->u.ins;
 			print_ins(fn, ins);
 		}
 		else if (use->type == UXXX){
-			printf("UXXX\n");
+			printf("[UXXX]\n");
 		}
 		else if (use->type == UJmp){
-			printf("Ujmp\n");
+			printf("[Ujmp]\n");
 		}
 	}
 }
 
 void print_all_use(Fn *fn) {
-	printf("Print use:\n");
+	printf("All uses for each definition in function:\n");
 	Blk *blk = fn->start;
 
 	for (int i = 0; i < fn->nblk; i++) {
-		printf("@%s:\n", blk->name);
+		printf("For definitions in @%s:\n", blk->name);
 
 		for (int j = 0; j < blk->nins; j++) {
 			Ins ins = blk->ins[j];
-			print_use_info(fn, ins.to.val);
+			print_use_info(fn, ins.to);
 		}
 
 		blk = blk->link;
 	}
 }
 
-/***********************************************************************************************************/
+/********** Функции для работы с массивом инвариантных инструкций *************/
 // инициализация массива
 info_aray_t init_array() {
 	info_aray_t array;
@@ -155,7 +198,7 @@ void print_info_array(Fn *fn, info_aray_t array) {
 	}
 }
 
-/******************* Функции для работы с нашими массивами ********************/
+/******************* Функции для работы с массивом блоков *********************/
 // инициализация массива блоков
 block_array_t init_block_array() {
 	block_array_t array;
@@ -241,43 +284,42 @@ int is_backward_edge(Blk *a, Blk *b) {
 
 // если есть несколько достигающих определений, и одно
 // из них внутри цикла, то переменная не инвариантна
-int one_of_reaching_definitions_in_loop(Fn *fn, block_array_t blocks, Ref arg) {
+int check_for_multiple_definitions(Fn *fn, block_array_t blocks, Ref arg) {
 	for (int k = 0; k < blocks.size; k++) {
 		for (Phi *phi = blocks.blocks[k]->phi; phi; phi = phi->link) {
 
-			if (phi->to.val != arg.val) // TODO: && same ssa prefix?
+			if (phi->to.val != arg.val)
 				continue;
 
 			// TODO: должны проверяться не блоки из которых приходит
 			// определение, а блоки в которых определение находится?
 			for (int i = 0; i < phi->narg; i++)
 				if (contain_block(blocks, phi->blk[i]))
-					return 1;
+					return 0;
+
+			return 1;
 		}
 	}
 
-	return 0;
+	return -1;
 }
 
 // проверка наличия достигающего определения внутри цикла
-int has_reaching_definition_in_loop(block_array_t blocks, Ref arg) {
+int is_definition_in_loop_instructions(block_array_t blocks, Ref arg) {
 	for (int i = 0; i < blocks.size; i++)
 		for (int j = 0; j < blocks.blocks[i]->nins; j++)
 			if (blocks.blocks[i]->ins[j].to.val == arg.val)
-				// TODO: && same ssa prefix?
-				// TODO: only one definition?
 				return 1;
 
 	return 0; // не нашли достигающее определение внутри цикла
 }
 
 // достигающее определение помечено инвариантным
-int is_reaching_definition_marked_invariant(info_aray_t invariant_instructions, Ref arg) {
+int is_definition_marked_invariant(info_aray_t invariant_instructions, Ref arg) {
 	for (int i = 0; i < invariant_instructions.size; i++) {
 		invariant_ins_t info = invariant_instructions.values[i];
 
 		if (arg.val == info.block->ins[info.instruction_index].to.val)
-			// TODO: && same ssa prefix?
 			return 1;
 	}
 
@@ -292,30 +334,35 @@ int is_invariant_argument(Fn *fn, block_array_t blocks, info_aray_t invariant_in
 
 	// переменная не может быть инвариантна, если достигающих
 	// определений несколько и одно из них внутри цикла
-	if (one_of_reaching_definitions_in_loop(fn, blocks, arg))
+	int phi = check_for_multiple_definitions(fn, blocks, arg);
+	if (phi == 1) // определений несколько, все вне цикла
+		return 1;
+	if (phi == 0) // определений несколько, одно из цикла
 		return 0;
+	// есть одно определение
+
+	// переменная инвариантна, если среди инструкций цикла нет её определения
+	if (!is_definition_in_loop_instructions(blocks, arg))
+		return 1;
+	// переменная определена инструкцией внутри цикла
 
 	// переменная инвариантна, если достигающее определение уже помечено инвариантным
-	// TODO: единственное
-	if (is_reaching_definition_marked_invariant(invariant_instructions, arg))
-		return 1;
-
-	// если есть достигающее определение в цикле, то это не инвариантный аргумент
-	if (has_reaching_definition_in_loop(blocks, arg))
-		return 0;
-
-	return 1;
+	return is_definition_marked_invariant(invariant_instructions, arg);
 }
 
-// проверка, что инструкция является инвариантом цикла (до этого ещё не просмотренным)
+// проверка, что инструкция является инвариантом цикла (до этого ещё не добавленым)
 int is_new_invariant(Fn *fn, block_array_t blocks, info_aray_t invariant_instructions, Ins *ins, Blk *blk) {
-	// если оба аргумента инвариантны, то инструкция -- инвариант цикла
+	// если уже есть в инвариантах, то это не новый инвариант
+	if (contain_instruction(invariant_instructions, ins))
+		return 0;
+
+	// инструкция – инвариант цикла, только если оба аргумента инвариантны
 	if (!is_invariant_argument(fn, blocks, invariant_instructions, ins->arg[0], blk))
 		return 0;
 	if (!is_invariant_argument(fn, blocks, invariant_instructions, ins->arg[1], blk))
 		return 0;
-	// если нет в инвариантах, то это новый инвариант
-	return !contain_instruction(invariant_instructions, ins);
+
+	return 1;
 }
 
 // собираем все инвариантные инструкции цикла
@@ -328,10 +375,20 @@ info_aray_t get_invariant_instructions(Fn *fn, block_array_t blocks) {
 
 		for (int i = 0; i < blocks.size; i++) {
 			for (int j = 0; j < blocks.blocks[i]->nins; j++) {
+				// Ins *ins = blocks.blocks[i]->ins + j;
+				// if (ins->to.val == 82) {
+				// 	printf("check 82 (b0 is @%s): ", blocks.blocks[0]->name);
+				// }
+
 				if (is_new_invariant(fn, blocks, invariant_instructions, blocks.blocks[i]->ins + j, blocks.blocks[i])) {
+					// if (ins->to.val == 82)
+					// 	printf("is new invar\n");
 					add_to_info_array(&invariant_instructions, blocks.blocks[i], i, j);
 					was_added = 1;
 				}
+				// else if (ins->to.val == 82)
+				// 	printf("is NOT new invar\n");
+
 			}
 		}
 	}
@@ -400,6 +457,7 @@ Blk* make_prehead(Fn *fn, Blk *first) {
 	strcpy(prehead->name, "prehead@");
 	strcat(prehead->name, first->name);
 
+	// если предзаголовок уже был создан, то возвращаем его
 	for (int i = 0; i < first->npred; i++) {
 		if (!strcmp(first->pred[i]->name, prehead->name)) {
 			free(prehead);
@@ -407,6 +465,7 @@ Blk* make_prehead(Fn *fn, Blk *first) {
 		}
 	}
 
+	// добавляем все связи между блоками
 	prehead->s1 = first;
 	prehead->s2 = NULL;
 	prehead->jmp.type = Jjmp;
@@ -414,6 +473,7 @@ Blk* make_prehead(Fn *fn, Blk *first) {
 	update_pred(first->pred, first->npred, prehead, first);
 	update_fn(fn, prehead, first);
 
+	// пока предзаголовок пустой
 	prehead->ins = NULL;
 	prehead->nins = 0;
 
@@ -421,19 +481,6 @@ Blk* make_prehead(Fn *fn, Blk *first) {
 }
 
 /******************** Перемещение инвариантных инструкций *********************/
-
-// есть ли ещё одно определение
-int has_another_def_in_loop(Blk *blk, Ins *ins) {
-	for (Phi *phi = blk->phi; phi; phi = phi->link)
-		if (phi->to.val == ins->to.val)
-			return 1;
-
-	for (int i = 0; i < blk->nins; i++)
-		if (blk->ins + i != ins && blk->ins[i].to.val == ins->to.val)
-			return 1;
-
-	return 0;
-}
 
 // если определение в блоке, доминирующем все
 // выходы из цикла, то его можно перенести
@@ -451,12 +498,11 @@ int dominates_exits(block_array_t blocks, Blk *block) {
 }
 
 // используется ли переменная после цикла
-int has_use_after_loop(Fn *fn, Blk *last, int val) {
+int has_use_after_loop(Fn *fn, uint max_id, int val) {
 	for (int i = 0; i < fn->tmp[val].nuse; i++) {
 		Use *use = fn->tmp[val].use + i;
 
-		// TODO its wrong.....
-		if (use->bid > last->id)
+		if (use->bid > max_id)
 			return 1;
 	}
 
@@ -464,23 +510,30 @@ int has_use_after_loop(Fn *fn, Blk *last, int val) {
 }
 
 // можно ли переместить инструкцию
-int can_move(Fn *fn, invariant_ins_t info, Blk *last, block_array_t blocks) {
+int can_move(Fn *fn, invariant_ins_t info, uint max_id, block_array_t blocks) {
 	Ins *ins = info.block->ins + info.instruction_index;
 
-	// определение нельзя перенести, если в цикле есть
-	// ещё одно определение этой же переменной
-	// TODO: IS IT NECESSARY?
-	for (int i = 0; i < blocks.size; i++)
-		if (has_another_def_in_loop(blocks.blocks[i], ins))
-			return 0;
+	// определение нельзя перенести, если в цикле есть ещё одно определение
+	// этой же переменной; но ssa-форма делает определения независимыми, поэтому
+	// нет необходимости это проверять
 
 	// определение можно перенести если оно в блоке,
 	// доминирующем все выходы из цикла...
 	if (dominates_exits(blocks, info.block))
 		return 1;
 
+	// if (ins->to.val == 82) {
+	// 	printf("\t82 in @%s does not dominate exits\n", info.block->name);
+	// }
+
 	// ...или мертво после цикла (нет использований)
-	return !has_use_after_loop(fn, last, ins->to.val);
+	if (!has_use_after_loop(fn, max_id, ins->to.val))
+		return 1;
+
+	// if (ins->to.val == 82) {
+	// 	printf("\t82 has uses after %d\n", max_id);
+	// }
+	return 0;
 }
 
 // перемещение инвариантных инструкций
@@ -489,22 +542,41 @@ void move_instructions(Fn *fn, block_array_t blocks, Blk *prehead, Blk *last, in
 
 	Ins* blocks_ins[blocks.size];
 	int blocks_ins_sizes[blocks.size];
+	uint max_id = 0;
 
 	// копируем информацию об инструкциях в блоках
-	// в новые массивы, которые и будем менять
+	// в новые массивы, которые и будем менять,
+	// и находим максимальный ид. среди блоков цикла
 	for (int i = 0; i < blocks.size; i++) {
 		blocks_ins_sizes[i] = blocks.blocks[i]->nins;
 		blocks_ins[i] = (Ins *) malloc(blocks.blocks[i]->nins * sizeof(Ins));
 
 		memcpy(blocks_ins[i], blocks.blocks[i]->ins, blocks.blocks[i]->nins * sizeof(Ins));
+
+		// printf("\t\t@%s  is %d.", blocks.blocks[i]->name, blocks.blocks[i]->id);
+		if (blocks.blocks[i]->id > max_id) {
+			// printf(" updated");
+			max_id = blocks.blocks[i]->id;
+		}
+		// printf("\n");
 	}
+
+	// printf("\t\tmax_id is %d\n", max_id);
 
 	// пытаемся переместить инвариантные инструкции
 	for (int i = 0; i < invariant_instructions.size; i++) {
 		invariant_ins_t info = invariant_instructions.values[i];
+		// Ins ins = info.block->ins[info.instruction_index];
 		// некоторые инструкции нельзя перенести
-		if (!can_move(fn, info, last, blocks))
+		if (!can_move(fn, info, max_id, blocks)) {
+			// if (ins.to.val == 82)
+			// 	printf("can NOT move 82 from @%s into @%s\n", info.block->name, prehead->name);
 			continue;
+		}
+
+		// if (ins.to.val == 82) {
+		// 	printf("can move 82 from @%s into @%s\n", info.block->name, prehead->name);
+		// }
 
 		// добавляем инструкцию в предзаголовок
 		prehead->ins[prehead->nins++] = info.block->ins[info.instruction_index];
@@ -566,6 +638,11 @@ void process_as_footer(Fn *fn, Blk *blk) {
 	block_array_t blocks = init_block_array();
 	get_loop_blocks(blk, blk, &blocks);
 
+#ifdef PRINT_LASTS_BLOCKS
+	printf("Loop for last @%s:\n", blk->name);
+	print_block_array(blocks);
+#endif
+
 	// подставляем заголовок и обрабатываем цикл
 	// заголовок -- блок, в который идёт обратная дуга
 	if (is_backward_edge(blk, blk->s1)) {
@@ -577,15 +654,51 @@ void process_as_footer(Fn *fn, Blk *blk) {
 	process_loop(fn, blk->s2, blk, blocks);
 }
 
-int get_block_after(block_array_t lasts, Blk *blk, int start) {
-	for (int i = start; i < lasts.size; i++)
-		if (blk == lasts.blocks[i])
-			return i;
+/*********************** Удаление пустых предзаголовков ***********************/
 
-	return -1;
+void remove_prehead(Fn *fn, Blk *prehead) {
+	Blk *head = prehead->s1;
+
+	for (int i = 0; i < prehead->npred; i++) {
+		if (prehead->pred[i]->s1 == prehead)
+			prehead->pred[i]->s1 = head;
+
+		if (prehead->pred[i]->s2 == prehead)
+			prehead->pred[i]->s2 = head;
+
+		head->pred[i ? head->npred++ : 0] = prehead->pred[i];
+	}
+
+	fn->nblk--;
+
+	if (prehead == fn->start) {
+		fn->start = prehead->link;
+		free(prehead->pred);
+		// free(prehead);
+		return;
+	}
+
+	Blk *blk = fn->start;
+
+	while (blk->link != prehead)
+		blk = blk->link;
+
+	blk->link = prehead->link;
+
+	free(prehead->pred);
+	// free(prehead);
+}
+
+void remove_empty_preheads(Fn *fn) {
+	for (Blk *blk = fn->start; blk; blk = blk->link) {
+		if (!strncmp("prehead@", blk->name, 8) && blk->nins == 0) {
+			remove_prehead(fn, blk);
+		}
+	}
 }
 
 /****************************** Главные функции *******************************/
+
 static void readfn (Fn *fn) {
   fillrpo(fn); // Traverses the CFG in reverse post-order, filling blk->id.
   fillpreds(fn);
@@ -599,7 +712,6 @@ static void readfn (Fn *fn) {
 		for (int i = 0; i < blk->npred; i++)
 			if (is_backward_edge(blk->pred[i], blk))
 				add_to_block_array(&lasts, blk->pred[i]);
-
 	// sort_blocks_array_by_id(lasts);
 
 #ifdef PRINT_LASTS
@@ -610,6 +722,10 @@ static void readfn (Fn *fn) {
 	for (int i = 0; i < lasts.size; i++)
 		process_as_footer(fn, lasts.blocks[i]);
 
+	remove_empty_preheads(fn);
+	// for (Blk *blk = fn->start; blk; blk = blk->link)
+	// 	print_block(fn, blk);
+	// printf("\n\n");
   printfn(fn, stdout);
 }
 
