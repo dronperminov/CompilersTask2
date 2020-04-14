@@ -10,9 +10,6 @@ extern "C" {
 
 #include <stdio.h>
 
-// #define PRINT_LASTS 1
-// #define PRINT_LASTS_BLOCKS 1
-
 // информация об инструкции
 typedef struct {
 	Blk *block;
@@ -34,125 +31,6 @@ typedef struct {
 	int size;
 	int capacity;
 } block_array_t;
-
-/*********************************** Печать ***********************************/
-
-// вывод имени с фи-суффиксом
-void print_arg(Fn *fn, Ref arg) {
-	if (arg.val >= Tmp0) {
-		printf("[%d]%s.%d", arg.val, fn->tmp[arg.val].name, fn->tmp[arg.val].phi);
-	}
-	else if (arg.type == RCon) {
-		printf("Const");
-	}
-	else if (arg.val == RXX) {
-		printf("[RXX]");
-	}
-	else {
-		printf("[Ref]");
-	}
-}
-
-// вывод инструкции
-void print_ins(Fn *fn, Ins *ins) {
-	if (!ins) {
-		printf("\t[Null Ins]\n");
-		return;
-	}
-
-	printf("\t");
-	print_arg(fn, ins->to);
-	printf(" = [Op] ");
-	print_arg(fn, ins->arg[0]);
-	printf(", ");
-	print_arg(fn, ins->arg[1]);
-	printf("\n");
-}
-
-// вывод фи-функции
-void print_phi(Fn *fn, Phi *phi) {
-	if (!phi) {
-		printf("\t[Null Phi]\n");
-		return;
-	}
-
-	printf("\t");
-	print_arg(fn, phi->to);
-	printf(" = phi @%s ", phi->blk[0]->name);
-	print_arg(fn, phi->arg[0]);
-	for (int i = 1; i < phi->narg; i++) {
-		printf(", @%s ", phi->blk[i]->name);
-		print_arg(fn, phi->arg[i]);
-	}
-	printf("\n");
-}
-
-void print_block(Fn *fn, Blk *blk) {
-	if (!blk) {
-		printf("[Null Blk]\n");
-		return;
-	}
-
-	printf("@%s (id:%d):\n", blk->name, blk->id);
-	for (Phi *phi = blk->phi; phi; phi = phi->link) {
-		print_phi(fn, phi);
-	}
-	for (Ins *ins = blk->ins; ins < blk->ins + blk->nins; ins++) {
-		print_ins(fn, ins);
-	}
-	// print_jmp(blk->jmp);
-}
-
-void print_use_info(Fn *fn, Ref arg) {
-	printf("Uses of ");
-	print_arg(fn, arg);
-
-	if (arg.val < Tmp0) {
-		printf(": –\n");
-		return;
-	}
-
-	Tmp tmp = fn->tmp[arg.val];
-	printf(": %d\n", tmp.nuse);
-
-	for (int i = 0; i < tmp.nuse; i++) {
-		Use *use = tmp.use + i;
-
-		printf("\tuse[%d] in blk %d: ", i, use->bid);
-		if (use->type == UPhi) {
-			printf("(UPhi) ");
-			Phi *phi = (Phi *) use->u.phi;
-			print_phi(fn, phi);
-		}
-		else if (use->type == UIns) {
-			printf("(UIns) ");
-			Ins *ins = (Ins *) use->u.ins;
-			print_ins(fn, ins);
-		}
-		else if (use->type == UXXX){
-			printf("[UXXX]\n");
-		}
-		else if (use->type == UJmp){
-			printf("[Ujmp]\n");
-		}
-	}
-}
-
-void print_all_use(Fn *fn) {
-	printf("All uses for each definition in function:\n");
-	Blk *blk = fn->start;
-
-	for (int i = 0; i < fn->nblk; i++) {
-		printf("For definitions in @%s:\n", blk->name);
-
-		for (int j = 0; j < blk->nins; j++) {
-			Ins ins = blk->ins[j];
-			print_use_info(fn, ins.to);
-		}
-
-		blk = blk->link;
-	}
-}
 
 /********** Функции для работы с массивом инвариантных инструкций *************/
 // инициализация массива
@@ -186,16 +64,6 @@ void add_to_info_array(info_aray_t *array, Blk *block, int block_index, int inst
 	if (array->size >= array->capacity) {
 		array->capacity *= 2;
 		array->values = (invariant_ins_t *) realloc(array->values, array->capacity * sizeof(invariant_ins_t));
-	}
-}
-
-// вывод массива инвариантных инструкций
-void print_info_array(Fn *fn, info_aray_t array) {
-	for (int i = 0; i < array.size; i++) {
-		Blk *blk = array.values[i].block;
-		Ins *ins = blk->ins + array.values[i].instruction_index;
-
-		print_ins(fn, ins);
 	}
 }
 
@@ -236,34 +104,6 @@ int add_to_block_array(block_array_t *array, Blk *blk) {
 	}
 
 	return 1;
-}
-
-// обмен местами двух блоков в массиве
-void swap_block_array(block_array_t array, int i, int j) {
-	Blk *tmp = array.blocks[i];
-	array.blocks[i] = array.blocks[j];
-	array.blocks[j] = tmp;
-}
-
-void sort_blocks_array_by_id(block_array_t array) {
-	int is_sorted = 0;
-
-	while (!is_sorted) {
-		is_sorted = 1;
-
-		for (int i = 0; i < array.size - 1; i++) {
-			if (array.blocks[i]->id < array.blocks[i + 1]->id) {
-				is_sorted = 0;
-				swap_block_array(array, i, i + 1);
-			}
-		}
-	}
-}
-
-void print_block_array(block_array_t array) {
-	for (int i = 0; i < array.size; i++) {
-		printf("@%s (id: %d)\n", array.blocks[i]->name, array.blocks[i]->id);
-	}
 }
 
 /****************** Проверка направления дуги между блоками *******************/
@@ -596,12 +436,6 @@ void get_loop_blocks(Blk *last, Blk *curr, block_array_t *blocks) {
 
 // обработка цикла
 void process_loop(Fn *fn, Blk *first, Blk *last, block_array_t blocks) {
-	for (int i = 0, j = blocks.size - 1; i < j; i++, j--) {
-		Blk *tmp = blocks.blocks[i];
-		blocks.blocks[i] = blocks.blocks[j];
-		blocks.blocks[j] = tmp;
-	}
-
 	// находим инвариантные инструкции
 	info_aray_t invariant_instructions = get_invariant_instructions(fn, blocks);
 
@@ -621,10 +455,10 @@ void process_as_footer(Fn *fn, Blk *blk) {
 	block_array_t blocks = init_block_array();
 	get_loop_blocks(blk, blk, &blocks);
 
-#ifdef PRINT_LASTS_BLOCKS
-	printf("Loop for last @%s:\n", blk->name);
-	print_block_array(blocks);
-#endif
+	if (contain_block(blocks, fn->start) && blk->s1 != fn->start && blk->s2 != fn->start) {
+		free(blocks.blocks);
+		return;
+	}
 
 	// подставляем заголовок и обрабатываем цикл
 	// заголовок -- блок, в который идёт обратная дуга
@@ -683,12 +517,6 @@ static void readfn (Fn *fn) {
 	filluse(fn);
 
 	block_array_t lasts = get_lasts(fn);
-	// sort_blocks_array_by_id(lasts);
-
-#ifdef PRINT_LASTS
-	printf("lasts:\n");
-	print_block_array(lasts);
-#endif
 
 	for (int i = 0; i < lasts.size; i++)
 		process_as_footer(fn, lasts.blocks[i]);
@@ -696,9 +524,7 @@ static void readfn (Fn *fn) {
 	free(lasts.blocks);
 
 	remove_empty_preheads(fn);
-	// for (Blk *blk = fn->start; blk; blk = blk->link)
-	// 	print_block(fn, blk);
-	// printf("\n\n");
+
 	printfn(fn, stdout);
 }
 
